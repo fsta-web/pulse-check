@@ -37,7 +37,7 @@ function OperatorsTab({ sites }: { sites: Site[] }) {
   const load = useCallback(async () => {
     const { data, error } = await supabase()
       .from("operators")
-      .select("id,nama,no_hp,area_utama_id,device_id,device_claimed_at,aktif")
+      .select("id,nama,no_hp,area_utama_id,device_id,device_claimed_at,device_model,device_os,device_browser,device_seen_at,aktif")
       .order("nama");
     if (error) setMsg({ ok: false, text: error.message });
     else setOps((data as Operator[]) || []);
@@ -71,7 +71,8 @@ function OperatorsTab({ sites }: { sites: Site[] }) {
   };
 
   const resetDevice = async (o: Operator) => {
-    if (!confirm(`Reset HP terdaftar untuk ${o.nama}? Operator harus memilih namanya lagi di HP baru.`)) return;
+    const hp = [o.device_model, o.device_os].filter(Boolean).join(" · ");
+    if (!confirm(`Reset HP terdaftar untuk ${o.nama}${hp ? ` (${hp})` : ""}? Operator harus memilih namanya lagi di HP baru.`)) return;
     const { error } = await supabase().from("operators").update({ device_id: null, device_claimed_at: null }).eq("id", o.id);
     if (error) return setMsg({ ok: false, text: error.message });
     setMsg({ ok: true, text: `HP terdaftar ${o.nama} sudah direset.` });
@@ -173,12 +174,23 @@ function OperatorsTab({ sites }: { sites: Site[] }) {
                   <td>{(o.area_utama_id && siteMap.get(o.area_utama_id)) || "-"}</td>
                   <td>
                     {o.device_id ? (
-                      <>
-                        Ya <span className="st-muted">({o.device_claimed_at ? fmtDateTime(o.device_claimed_at) : "-"})</span>{" "}
+                      <div style={{ display: "flex", gap: 8, alignItems: "flex-start", justifyContent: "space-between" }}>
+                        <div>
+                          <b>{o.device_model || "Model belum tercatat"}</b>
+                          {o.device_os && <span> · {o.device_os}</span>}
+                          <div className="st-muted">
+                            {o.device_browser ? `${o.device_browser} · ` : ""}
+                            {o.device_seen_at
+                              ? `terakhir dibuka ${fmtDateTime(o.device_seen_at)}`
+                              : o.device_claimed_at
+                                ? `terdaftar ${fmtDateTime(o.device_claimed_at)}`
+                                : ""}
+                          </div>
+                        </div>
                         <button className="btn btn-sm" onClick={() => resetDevice(o)}>
                           Reset
                         </button>
-                      </>
+                      </div>
                     ) : (
                       <span className="st-muted">Belum</span>
                     )}

@@ -34,6 +34,10 @@ export type Operator = {
   area_utama_id: string | null;
   device_id: string | null;
   device_claimed_at: string | null;
+  device_model?: string | null;
+  device_os?: string | null;
+  device_browser?: string | null;
+  device_seen_at?: string | null;
   aktif: boolean;
 };
 

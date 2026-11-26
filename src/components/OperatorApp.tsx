@@ -6,6 +6,7 @@ import { rpc } from "@/lib/rpc";
 import { fmtJarak, nearestSites, siteInRadius, type SiteLite } from "@/lib/status";
 import { fmtAgo, fmtTime, minutesSince } from "@/lib/time";
 import { getDeviceId, store, uuid, type OperatorPick, type QueueItem } from "@/lib/operator-store";
+import { getDeviceInfo } from "@/lib/device";
 
 type CheckinResp = {
   ok: boolean;
@@ -195,6 +196,18 @@ export default function OperatorApp() {
       cancelled = true;
     };
   }, [ready, operator, deviceId, applyStatus]);
+
+  // Catat model HP + sistem operasi untuk HP terdaftar (sekali per buka aplikasi per nama).
+  const infoSentFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ready || !operator || !deviceId || !online || infoSentFor.current === operator.id) return;
+    infoSentFor.current = operator.id;
+    getDeviceInfo().then((d) =>
+      rpc<string>("op_device_info", { p_operator: operator.id, p_device: deviceId, p_model: d.model, p_os: d.os, p_browser: d.browser }).then((r) => {
+        if (!r.ok) infoSentFor.current = null;
+      }),
+    );
+  }, [ready, operator, deviceId, online]);
 
   // ---------- GPS disiapkan sejak halaman dibuka ----------
   const fixRef = useRef<{ pos: Pos; at: number } | null>(null);

@@ -47,9 +47,11 @@ export default function MapView({ statuses, latest, operators, staleMinutes, sel
   const el = useRef<HTMLDivElement>(null);
   const L = useRef<typeof Leaflet | null>(null);
   const map = useRef<Leaflet.Map | null>(null);
+  const roRef = useRef<ResizeObserver | null>(null);
   const areaLayer = useRef<Leaflet.LayerGroup | null>(null);
   const opLayer = useRef<Leaflet.LayerGroup | null>(null);
   const fitted = useRef(false);
+  const shownOnce = useRef(false);
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
   const readyRef = useRef(false);
@@ -62,14 +64,7 @@ export default function MapView({ statuses, latest, operators, staleMinutes, sel
       const lf = await import("leaflet");
       if (cancelled || !el.current || map.current) return;
       L.current = lf;
-      const m = lf.map(el.current, {
-        maxBounds: AREA_BOUNDS,
-        maxBoundsViscosity: 1,
-        minZoom: 8,
-        maxZoom: 18,
-        zoomControl: true,
-        attributionControl: true,
-      });
+      const m = lf.map(el.current, { maxZoom: 19, zoomControl: true, attributionControl: true });
       lf.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
@@ -78,11 +73,28 @@ export default function MapView({ statuses, latest, operators, staleMinutes, sel
       areaLayer.current = lf.layerGroup().addTo(m);
       opLayer.current = lf.layerGroup().addTo(m);
       map.current = m;
+      if (typeof ResizeObserver !== "undefined") {
+        const ro = new ResizeObserver(() => {
+          const visible = !!el.current && el.current.clientWidth > 0 && el.current.clientHeight > 0;
+          m.invalidateSize({ pan: false });
+          // Peta dibuat saat tab peta tersembunyi: atur ulang tampilan begitu terlihat.
+          if (visible && !shownOnce.current) {
+            shownOnce.current = true;
+            fitted.current = false;
+            m.fitBounds(AREA_BOUNDS);
+            redraw.current();
+          }
+        });
+        ro.observe(el.current);
+        roRef.current = ro;
+      }
+      setTimeout(() => m.invalidateSize({ pan: false }), 300);
       readyRef.current = true;
       redraw.current();
     })();
     return () => {
       cancelled = true;
+      roRef.current?.disconnect();
       map.current?.remove();
       map.current = null;
     };

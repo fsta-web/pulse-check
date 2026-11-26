@@ -17,6 +17,7 @@ export default function SitePicker({ sites, editing, onPick }: Props) {
   const el = useRef<HTMLDivElement>(null);
   const L = useRef<typeof Leaflet | null>(null);
   const map = useRef<Leaflet.Map | null>(null);
+  const roRef = useRef<ResizeObserver | null>(null);
   const layer = useRef<Leaflet.LayerGroup | null>(null);
   const pickRef = useRef(onPick);
   pickRef.current = onPick;
@@ -29,7 +30,7 @@ export default function SitePicker({ sites, editing, onPick }: Props) {
       const lf = await import("leaflet");
       if (cancelled || !el.current || map.current) return;
       L.current = lf;
-      const m = lf.map(el.current, { maxBounds: AREA_BOUNDS, maxBoundsViscosity: 1, minZoom: 8, maxZoom: 18 });
+      const m = lf.map(el.current, { maxZoom: 19 });
       lf.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
@@ -38,10 +39,17 @@ export default function SitePicker({ sites, editing, onPick }: Props) {
       m.on("click", (e: Leaflet.LeafletMouseEvent) => pickRef.current(+e.latlng.lat.toFixed(6), +e.latlng.lng.toFixed(6)));
       layer.current = lf.layerGroup().addTo(m);
       map.current = m;
+      if (typeof ResizeObserver !== "undefined") {
+        const ro = new ResizeObserver(() => m.invalidateSize({ pan: false }));
+        ro.observe(el.current);
+        roRef.current = ro;
+      }
+      setTimeout(() => m.invalidateSize({ pan: false }), 300);
       draw.current();
     })();
     return () => {
       cancelled = true;
+      roRef.current?.disconnect();
       map.current?.remove();
       map.current = null;
     };

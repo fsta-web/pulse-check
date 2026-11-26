@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Kondisi } from "@/lib/supabase";
 import { rpc } from "@/lib/rpc";
 import { fmtJarak, nearestSites, siteInRadius, type SiteLite } from "@/lib/status";
@@ -78,8 +78,11 @@ export default function OperatorApp() {
   const [sites, setSites] = useState<SiteLite[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [last, setLast] = useState(store.getLast());
-  const [search, setSearch] = useState("");
+  const [listsLoaded, setListsLoaded] = useState(false);
+  const [claiming, setClaiming] = useState(false);
+  const [staffSession, setStaffSession] = useState(false);
   const [keterangan, setKeterangan] = useState("");
+  const nameRef = useRef<HTMLSelectElement>(null);
   const [phase, setPhase] = useState<"idle" | "locating" | "sending">("idle");
   const [pickSite, setPickSite] = useState<{ pos: Pos | null; gpsErr: string | null } | null>(null);
   const [done, setDone] = useState<Done | null>(null);
@@ -100,6 +103,11 @@ export default function OperatorApp() {
     setSites(store.getSites());
     setQueue(store.getQueue());
     setOnline(navigator.onLine);
+    try {
+      setStaffSession(!!localStorage.getItem("pulse-auth"));
+    } catch {
+      /* abaikan */
+    }
     setReady(true);
 
     if ("serviceWorker" in navigator) {
@@ -142,6 +150,7 @@ export default function OperatorApp() {
       setSites(s.data);
       store.setSites(s.data);
     }
+    if (o.ok || !navigator.onLine) setListsLoaded(true);
   }, []);
 
   useEffect(() => {
@@ -273,9 +282,20 @@ export default function OperatorApp() {
   }, [ready, operator, pushState, subscribePush]);
 
   // ---------- Pilih nama ----------
-  const chooseOperator = async (o: OperatorPick) => {
+  const chooseOperator = async (id: string) => {
     setError(null);
+    setNotice(null);
+    if (!id) return;
+    if (operator && id === operator.id) return;
+    if (queue.length) {
+      setError("Masih ada laporan yang belum terkirim. Tunggu sampai terkirim sebelum ganti nama.");
+      return;
+    }
+    const o = ops.find((x) => x.id === id);
+    if (!o) return;
+    setClaiming(true);
     const r = await rpc<string>("op_claim", { p_operator: o.id, p_device: deviceId });
+    setClaiming(false);
     if (!r.ok) {
       setError(r.network ? "Butuh sinyal untuk memilih nama pertama kali." : r.error);
       return;
@@ -286,20 +306,6 @@ export default function OperatorApp() {
     store.setLast(null);
     setLast(null);
     setOperator(o);
-    setSearch("");
-  };
-
-  const changeOperator = () => {
-    if (queue.length) {
-      setError("Masih ada laporan yang belum terkirim. Tunggu sampai terkirim sebelum ganti nama.");
-      return;
-    }
-    if (!confirm("Ganti nama operator di HP ini?")) return;
-    store.setOperator(null);
-    store.setLast(null);
-    setLast(null);
-    setOperator(null);
-    refreshLists();
   };
 
   // ---------- Check-in ----------
@@ -325,9 +331,14 @@ export default function OperatorApp() {
   };
 
   const doCheckin = async (kondisi: Kondisi) => {
-    if (!operator || phase !== "idle") return;
+    if (phase !== "idle") return;
     setError(null);
     setNotice(null);
+    if (!operator) {
+      setError("Pilih nama Anda dulu.");
+      nameRef.current?.focus();
+      return;
+    }
     const ket = keterangan.trim();
     if (kondisi === "kendala" && !ket) {
       setError(ERR_TEXT.keterangan_wajib);
@@ -442,11 +453,6 @@ export default function OperatorApp() {
     return () => clearTimeout(t);
   }, [done]);
 
-  const filteredOps = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return q ? ops.filter((o) => o.nama.toLowerCase().includes(q)) : ops;
-  }, [ops, search]);
-
   const install = async () => {
     const e = installEvt as unknown as { prompt: () => Promise<void> } | null;
     if (e) {
@@ -456,43 +462,6 @@ export default function OperatorApp() {
   };
 
   if (!ready) return <main className="op-shell" />;
-
-  // ---------- Layar: pilih nama ----------
-  if (!operator) {
-    return (
-      <main className="op-shell">
-        <header className="op-head">
-          <div className="op-brand">
-            <span className="op-logo" aria-hidden="true" />
-            Pulse Check
-          </div>
-          {!online && <span className="pill pill-warn">Tanpa sinyal</span>}
-        </header>
-        <section className="op-card">
-          <h1 className="op-title">Siapa Anda?</h1>
-          <p className="op-sub">Pilih nama Anda sekali saja. HP ini akan mengingatnya.</p>
-          {error && <p className="op-error">{error}</p>}
-          <input
-            className="op-input"
-            placeholder="Cari nama…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            autoComplete="off"
-          />
-          <div className="op-names">
-            {filteredOps.map((o) => (
-              <button key={o.id} className="op-name" onClick={() => chooseOperator(o)}>
-                {o.nama}
-              </button>
-            ))}
-            {!filteredOps.length && (
-              <p className="op-sub">{ops.length ? "Nama tidak ditemukan." : online ? "Memuat daftar nama…" : "Butuh sinyal untuk memuat daftar nama."}</p>
-            )}
-          </div>
-        </section>
-      </main>
-    );
-  }
 
   // ---------- Layar: terkirim ----------
   if (done) {
@@ -527,26 +496,48 @@ export default function OperatorApp() {
   return (
     <main className="op-shell">
       <header className="op-head">
-        <div>
-          <div className="op-brand">
-            <span className="op-logo" aria-hidden="true" />
-            {operator.nama}
-          </div>
-          <button className="op-link" onClick={changeOperator}>
-            Ganti nama
-          </button>
+        <div className="op-brand">
+          <span className="op-logo" aria-hidden="true" />
+          Pulse Check
+          {!online ? <span className="pill pill-warn">Tanpa sinyal</span> : <span className="pill pill-ok">Online</span>}
         </div>
-        {!online ? <span className="pill pill-warn">Tanpa sinyal</span> : <span className="pill pill-ok">Online</span>}
+        <a className="op-staff-link" href={staffSession ? "/dashboard" : "/login"}>
+          {staffSession ? "Dashboard" : "Login SPV / Admin"}
+        </a>
       </header>
 
-      <section className="op-last">
-        {last ? (
-          <>
-            Terakhir lapor <b>{fmtTime(last.ditekan_at)}</b> ({fmtAgo(lastMin ?? 0)})
-            {last.site_nama ? ` · ${last.site_nama}` : ""}
-          </>
-        ) : (
-          "Belum ada check-in dari HP ini."
+      <section className="op-card op-who">
+        <label className="op-label" htmlFor="nama">
+          Nama operator
+        </label>
+        <select
+          id="nama"
+          ref={nameRef}
+          className="op-input op-select"
+          value={operator?.id || ""}
+          disabled={claiming}
+          onChange={(e) => chooseOperator(e.target.value)}
+        >
+          <option value="">{ops.length ? "— Pilih nama Anda —" : listsLoaded ? "Belum ada nama operator" : "Memuat daftar nama…"}</option>
+          {operator && !ops.some((o) => o.id === operator.id) && <option value={operator.id}>{operator.nama}</option>}
+          {ops.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.nama}
+            </option>
+          ))}
+        </select>
+        {listsLoaded && !ops.length && <p className="op-muted">Admin perlu menambahkan nama operator lebih dulu.</p>}
+        {operator && (
+          <p className="op-muted">
+            {last ? (
+              <>
+                Terakhir lapor <b>{fmtTime(last.ditekan_at)}</b> ({fmtAgo(lastMin ?? 0)})
+                {last.site_nama ? ` · ${last.site_nama}` : ""}
+              </>
+            ) : (
+              "Belum ada check-in dari HP ini."
+            )}
+          </p>
         )}
       </section>
 

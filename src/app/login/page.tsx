@@ -59,6 +59,9 @@ export default function LoginPage() {
         <button className="btn btn-primary" disabled={busy}>
           {busy ? "Memeriksa…" : "Masuk"}
         </button>
+        <a href="/" className="st-muted" style={{ textAlign: "center" }}>
+          ← Kembali ke halaman check-in
+        </a>
       </form>
     </div>
   );

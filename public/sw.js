@@ -1,5 +1,5 @@
 /* Pulse Check service worker: halaman tetap terbuka tanpa sinyal + notifikasi pengingat. */
-const VERSION = "pc-v1";
+const VERSION = "pc-v2";
 const SHELL = ["/", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
 
 self.addEventListener("install", (event) => {

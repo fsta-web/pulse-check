@@ -45,7 +45,7 @@ export default function StaffShell({ children, adminOnly = false }: { children: 
       setStaff({ userId: session.user.id, email: session.user.email || "", role: prof.role, nama: prof.nama });
     })();
     const { data: sub } = sb.auth.onAuthStateChange((evt) => {
-      if (evt === "SIGNED_OUT") router.replace("/login");
+      if (evt === "SIGNED_OUT") router.replace("/");
     });
     return () => {
       alive = false;
@@ -55,7 +55,7 @@ export default function StaffShell({ children, adminOnly = false }: { children: 
 
   const logout = async () => {
     await supabase().auth.signOut();
-    router.replace("/login");
+    router.replace("/");
   };
 
   if (err)
@@ -89,6 +89,9 @@ export default function StaffShell({ children, adminOnly = false }: { children: 
             </Link>
           ))}
           <div className="st-right">
+            <a href="/" style={{ padding: 0, fontWeight: 400 }}>
+              Halaman check-in
+            </a>
             <span>
               {staff.nama || staff.email} · {staff.role === "admin" ? "Admin" : "SPV"}
             </span>

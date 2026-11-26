@@ -171,3 +171,6 @@ a { color: var(--brand-dark); }
 .op-head .op-brand .pill { font-size: 11px; padding: 2px 8px; }
 @media (max-width: 360px) { .op-head .op-brand .pill { display: none; } }
 @media (min-width: 760px) { .op-staff-link { position: fixed; top: 16px; right: 24px; z-index: 20; } }
+.op-gps { font-size: 13px; color: var(--muted); }
+.op-gps-ready { color: #166534; }
+.op-gps-denied, .op-gps-error { color: #92400e; }

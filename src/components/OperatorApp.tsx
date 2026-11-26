@@ -140,50 +140,97 @@ export default function OperatorApp() {
     };
   }, []);
 
-  const refreshLists = useCallback(async () => {
-    const [o, s] = await Promise.all([rpc<OperatorPick[]>("op_list"), rpc<SiteLite[]>("op_sites")]);
-    if (o.ok) {
-      setOps(o.data);
-      store.setOps(o.data);
+  const applyStatus = useCallback((st: StatusResp | null) => {
+    if (!st) return;
+    if (st.state === "taken") {
+      setError(ERR_TEXT.device_mismatch);
+      store.setOperator(null);
+      setOperator(null);
+    } else if (st.state === "inactive") {
+      setError(ERR_TEXT.inactive);
+      store.setOperator(null);
+      setOperator(null);
+    } else if (st.last) {
+      const l = st.last;
+      const local = store.getLast();
+      if (!local || l.ditekan_at > local.ditekan_at) {
+        store.setLast(l);
+        setLast(l);
+      }
     }
-    if (s.ok) {
-      setSites(s.data);
-      store.setSites(s.data);
-    }
-    if (o.ok || !navigator.onLine) setListsLoaded(true);
   }, []);
+
+  // Satu panggilan saat halaman dibuka: daftar nama, daftar area, dan status operator.
+  const statusFor = useRef<string | null>(null);
+  const refreshLists = useCallback(async () => {
+    const opId = store.getOperator()?.id ?? null;
+    const r = await rpc<{ ops: OperatorPick[]; sites: SiteLite[]; status: StatusResp | null }>("op_bootstrap", {
+      p_operator: opId,
+      p_device: getDeviceId(),
+    });
+    if (r.ok) {
+      setOps(r.data.ops);
+      store.setOps(r.data.ops);
+      setSites(r.data.sites);
+      store.setSites(r.data.sites);
+      statusFor.current = opId;
+      applyStatus(r.data.status);
+    }
+    if (r.ok || !navigator.onLine) setListsLoaded(true);
+  }, [applyStatus]);
 
   useEffect(() => {
     if (ready) refreshLists();
   }, [ready, refreshLists]);
 
-  // Cek status operator (HP terdaftar, check-in terakhir).
+  // Status operator saat nama diganti (saat halaman dibuka sudah ikut di op_bootstrap).
   useEffect(() => {
-    if (!ready || !operator || !deviceId) return;
+    if (!ready || !operator || !deviceId || statusFor.current === operator.id) return;
+    statusFor.current = operator.id;
     let cancelled = false;
     rpc<StatusResp>("op_status", { p_operator: operator.id, p_device: deviceId }).then((r) => {
-      if (cancelled || !r.ok) return;
-      if (r.data.state === "taken") {
-        setError(ERR_TEXT.device_mismatch);
-        store.setOperator(null);
-        setOperator(null);
-      } else if (r.data.state === "inactive") {
-        setError(ERR_TEXT.inactive);
-        store.setOperator(null);
-        setOperator(null);
-      } else if (r.data.last) {
-        const l = r.data.last;
-        const local = store.getLast();
-        if (!local || l.ditekan_at > local.ditekan_at) {
-          store.setLast(l);
-          setLast(l);
-        }
-      }
+      if (!cancelled && r.ok) applyStatus(r.data);
     });
     return () => {
       cancelled = true;
     };
-  }, [ready, operator, deviceId]);
+  }, [ready, operator, deviceId, applyStatus]);
+
+  // ---------- GPS disiapkan sejak halaman dibuka ----------
+  const fixRef = useRef<{ pos: Pos; at: number } | null>(null);
+  const [gps, setGps] = useState<{ state: "off" | "searching" | "ready" | "denied" | "error"; acc: number | null }>({ state: "off", acc: null });
+  useEffect(() => {
+    if (!ready || !operator || !("geolocation" in navigator)) return;
+    let watchId: number | null = null;
+    let stopTimer: ReturnType<typeof setTimeout> | null = null;
+    const stop = () => {
+      if (watchId != null) navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+      if (stopTimer) clearTimeout(stopTimer);
+      stopTimer = null;
+    };
+    const start = () => {
+      if (watchId != null) return;
+      setGps((g) => (g.state === "ready" ? g : { state: "searching", acc: null }));
+      watchId = navigator.geolocation.watchPosition(
+        (p) => {
+          fixRef.current = { pos: { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy }, at: Date.now() };
+          setGps({ state: "ready", acc: Math.round(p.coords.accuracy) });
+        },
+        (e) => setGps({ state: e.code === 1 ? "denied" : "error", acc: null }),
+        { enableHighAccuracy: true, maximumAge: 15000, timeout: 60000 },
+      );
+      // Hemat baterai: berhenti setelah 5 menit, dinyalakan lagi saat halaman dibuka ulang.
+      stopTimer = setTimeout(stop, 5 * 60000);
+    };
+    const onVis = () => (document.visibilityState === "visible" ? start() : stop());
+    start();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [ready, operator]);
 
   // ---------- Antrean offline ----------
   const saveQueue = (q: QueueItem[]) => {
@@ -201,6 +248,10 @@ export default function OperatorApp() {
     let sent = 0;
     const dropped: string[] = [];
     for (const item of q) {
+      if (item.needs_site && !item.site_id) {
+        remaining.push(item);
+        continue;
+      }
       const r = await rpc<CheckinResp>("op_checkin", {
         p_client_id: item.client_id,
         p_operator: item.operator_id,
@@ -218,6 +269,8 @@ export default function OperatorApp() {
         sent++;
       } else if (!r.ok && r.network) {
         remaining.push({ ...item, attempts: item.attempts + 1 });
+      } else if (r.ok && (r.data.error === "need_site" || r.data.error === "invalid_site")) {
+        remaining.push({ ...item, site_id: null, site_nama: null, needs_site: true, attempts: item.attempts + 1 });
       } else {
         const code = r.ok ? r.data.error || "gagal" : r.error;
         dropped.push(ERR_TEXT[code] || code);
@@ -227,8 +280,9 @@ export default function OperatorApp() {
     setQueue(remaining);
     flushing.current = false;
     if (sent) setNotice(`${sent} laporan tertunda sudah terkirim.`);
+    if (remaining.some((x) => x.needs_site)) refreshLists();
     if (dropped.length) setError(`Laporan tertunda ditolak: ${dropped[0]}`);
-  }, []);
+  }, [refreshLists]);
 
   useEffect(() => {
     if (!ready) return;
@@ -322,6 +376,24 @@ export default function OperatorApp() {
     r?.(siteId);
   };
 
+  const fixQueueSite = async () => {
+    const item = store.getQueue().find((x) => x.needs_site);
+    if (!item) return;
+    if (!store.getSites().length) await refreshLists();
+    if (!store.getSites().length) {
+      setError("Daftar area belum termuat. Coba lagi saat ada sinyal.");
+      return;
+    }
+    const siteId = await askSite(
+      item.lat != null && item.lng != null ? { lat: item.lat, lng: item.lng, acc: item.akurasi ?? 0 } : null,
+      item.lat == null ? "Laporan ini tanpa lokasi GPS" : null,
+    );
+    if (!siteId) return;
+    const nama = store.getSites().find((x) => x.id === siteId)?.nama ?? null;
+    saveQueue(store.getQueue().map((x) => (x.client_id === item.client_id ? { ...x, site_id: siteId, site_nama: nama, needs_site: false } : x)));
+    flushQueue();
+  };
+
   const finish = (d: Done, kondisi: Kondisi) => {
     const l = { ditekan_at: d.waktu, kondisi, site_nama: d.site };
     store.setLast(l);
@@ -347,7 +419,14 @@ export default function OperatorApp() {
     }
     const pressedAt = new Date().toISOString();
     setPhase("locating");
-    const { pos, err: gpsErr } = await getPosition(kondisi === "darurat" ? 8000 : 15000);
+    const cached = fixRef.current && Date.now() - fixRef.current.at < 120000 ? fixRef.current.pos : null;
+    let pos: Pos | null = cached && cached.acc <= 150 ? cached : null;
+    let gpsErr: string | null = null;
+    if (!pos) {
+      const r = await getPosition(kondisi === "darurat" ? 6000 : 10000);
+      pos = r.pos ?? cached;
+      gpsErr = pos ? null : r.err;
+    }
 
     let siteList = sites;
     if (!siteList.length) {
@@ -539,11 +618,32 @@ export default function OperatorApp() {
             )}
           </p>
         )}
+        {operator && (
+          <p className={`op-gps op-gps-${gps.state}`}>
+            {gps.state === "ready"
+              ? `GPS siap · ±${gps.acc} m`
+              : gps.state === "searching"
+                ? "Mencari sinyal GPS…"
+                : gps.state === "denied"
+                  ? "Izin lokasi ditolak. Izinkan lokasi di pengaturan browser."
+                  : gps.state === "error"
+                    ? "GPS belum mendapat posisi. Pastikan GPS HP menyala."
+                    : ""}
+          </p>
+        )}
       </section>
 
-      {queue.length > 0 && (
+      {queue.some((x) => x.needs_site) && (
         <section className="op-queue">
-          {queue.length} laporan menunggu sinyal. Akan dikirim otomatis.
+          {queue.filter((x) => x.needs_site).length} laporan tertunda belum punya area.
+          <button className="op-link" onClick={fixQueueSite}>
+            Pilih area
+          </button>
+        </section>
+      )}
+      {queue.some((x) => !x.needs_site) && (
+        <section className="op-queue">
+          {queue.filter((x) => !x.needs_site).length} laporan menunggu sinyal. Akan dikirim otomatis.
           {online && (
             <button className="op-link" onClick={() => flushQueue()}>
               Kirim sekarang

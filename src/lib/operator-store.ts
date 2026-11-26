@@ -18,6 +18,7 @@ export type QueueItem = {
   site_id: string | null;
   site_nama: string | null;
   attempts: number;
+  needs_site?: boolean;
 };
 
 const K = {

@@ -51,12 +51,40 @@ export function useLive(onNewCheckin?: (c: Checkin) => void): LiveData {
     setSites((s.data as Site[]) || []);
     setOperators((o.data as Operator[]) || []);
     if (st.data) setSettings(st.data as Settings);
-    setCheckins((c.data as Checkin[]) || []);
+    const rows = (c.data as Checkin[]) || [];
+    setCheckins(rows);
+    lastReceived.current = rows.reduce<string>((m, r) => (r.diterima_at > m ? r.diterima_at : m), new Date(dayStartMs(date)).toISOString());
     todayRef.current = date;
     setToday(date);
     setError(null);
     setLoading(false);
   }, []);
+
+  // Ambil hanya check-in baru (berdasarkan waktu diterima server), jauh lebih hemat dari memuat ulang semua.
+  const lastReceived = useRef<string | null>(null);
+  const fetchNew = useCallback(async () => {
+    const since = lastReceived.current;
+    if (!since) return load();
+    const from = new Date(Date.parse(since) - 120000).toISOString();
+    const { data, error } = await supabase()
+      .from("checkins")
+      .select(CHECKIN_COLS)
+      .gte("diterima_at", from)
+      .gte("ditekan_at", new Date(dayStartMs(todayRef.current)).toISOString())
+      .order("diterima_at", { ascending: false })
+      .limit(1000);
+    if (error || !data) return;
+    const rows = data as Checkin[];
+    if (rows.length) {
+      setCheckins((prev) => {
+        const ids = new Set(prev.map((p) => p.id));
+        const add = rows.filter((r) => !ids.has(r.id));
+        return add.length ? [...add, ...prev] : prev;
+      });
+      const max = rows.reduce((m, r) => (r.diterima_at > m ? r.diterima_at : m), since);
+      lastReceived.current = max;
+    }
+  }, [load]);
 
   useEffect(() => {
     load();
@@ -68,12 +96,13 @@ export function useLive(onNewCheckin?: (c: Checkin) => void): LiveData {
         const c = payload.new as Checkin;
         if (witaDate(c.ditekan_at) !== todayRef.current) return;
         setCheckins((prev) => (prev.some((p) => p.id === c.id) ? prev : [c, ...prev]));
+        if (!lastReceived.current || c.diterima_at > lastReceived.current) lastReceived.current = c.diterima_at;
         cb.current?.(c);
       })
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
           setConnected(true);
-          if (wasConnected) load(); // tersambung lagi: ambil data yang terlewat
+          if (wasConnected) fetchNew(); // tersambung lagi: ambil check-in yang terlewat saja
           wasConnected = true;
         } else if (status === "CLOSED" || status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
           setConnected(false);
@@ -84,16 +113,28 @@ export function useLive(onNewCheckin?: (c: Checkin) => void): LiveData {
       setNow(t);
       if (witaDate(t) !== todayRef.current) load();
     }, 30000);
-    const full = setInterval(load, 5 * 60000);
-    const onVis = () => document.visibilityState === "visible" && load();
+    // Cadangan kalau realtime terputus diam-diam: cek check-in baru tiap 10 menit, data master tiap 30 menit.
+    const inc = setInterval(fetchNew, 10 * 60000);
+    const full = setInterval(load, 30 * 60000);
+    let hiddenAt = 0;
+    const onVis = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAt = Date.now();
+        return;
+      }
+      const away = hiddenAt ? Date.now() - hiddenAt : 0;
+      if (away > 30 * 60000) load();
+      else if (away > 2 * 60000) fetchNew();
+    };
     document.addEventListener("visibilitychange", onVis);
     return () => {
       clearInterval(tick);
+      clearInterval(inc);
       clearInterval(full);
       document.removeEventListener("visibilitychange", onVis);
       sb.removeChannel(ch);
     };
-  }, [load]);
+  }, [load, fetchNew]);
 
   return { loading, error, sites, operators, settings, today, checkins, now, connected, reload: load };
 }

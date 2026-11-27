@@ -35,6 +35,8 @@ type Done = {
   luar: boolean;
   tanpaLokasi: boolean;
   antre: boolean;
+  viaQr?: boolean;
+  sudahAda?: boolean;
 };
 
 const ERR_TEXT: Record<string, string> = {
@@ -42,6 +44,7 @@ const ERR_TEXT: Record<string, string> = {
   inactive: "Nama ini sudah tidak aktif. Pilih nama lain atau hubungi admin.",
   keterangan_wajib: "Keterangan wajib diisi untuk laporan kendala.",
   invalid_site: "Area tidak ditemukan. Pilih area lagi.",
+  invalid_qr: "Kode QR tidak dikenal atau sudah diganti. Minta admin mencetak ulang QR area ini.",
 };
 
 const VAPID = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "";
@@ -84,7 +87,9 @@ export default function OperatorApp() {
   const [staffSession, setStaffSession] = useState(false);
   const [keterangan, setKeterangan] = useState("");
   const nameRef = useRef<HTMLSelectElement>(null);
-  const [phase, setPhase] = useState<"idle" | "locating" | "sending">("idle");
+  const [phase, setPhase] = useState<"idle" | "locating" | "sending" | "qr">("idle");
+  const [qr, setQr] = useState<{ token: string; site: string | null; invalid: boolean } | null>(null);
+  const qrBusy = useRef(false);
   const [pickSite, setPickSite] = useState<{ pos: Pos | null; gpsErr: string | null } | null>(null);
   const [done, setDone] = useState<Done | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -104,6 +109,11 @@ export default function OperatorApp() {
     setSites(store.getSites());
     setQueue(store.getQueue());
     setOnline(navigator.onLine);
+    const qrToken = new URLSearchParams(window.location.search).get("qr");
+    if (qrToken && /^[a-z0-9]{6,20}$/i.test(qrToken)) {
+      setQr({ token: qrToken.toLowerCase(), site: null, invalid: false });
+      window.history.replaceState(null, "", "/");
+    }
     try {
       setStaffSession(!!localStorage.getItem("pulse-auth"));
     } catch {
@@ -265,19 +275,31 @@ export default function OperatorApp() {
         remaining.push(item);
         continue;
       }
-      const r = await rpc<CheckinResp>("op_checkin", {
-        p_client_id: item.client_id,
-        p_operator: item.operator_id,
-        p_device: dev,
-        p_kondisi: item.kondisi,
-        p_keterangan: item.keterangan,
-        p_lat: item.lat,
-        p_lng: item.lng,
-        p_akurasi: item.akurasi,
-        p_ditekan_at: item.ditekan_at,
-        p_offline: true,
-        p_site: item.site_id,
-      });
+      const r = item.qr_token
+        ? await rpc<CheckinResp>("op_checkin_qr", {
+            p_client_id: item.client_id,
+            p_operator: item.operator_id,
+            p_device: dev,
+            p_token: item.qr_token,
+            p_lat: item.lat,
+            p_lng: item.lng,
+            p_akurasi: item.akurasi,
+            p_ditekan_at: item.ditekan_at,
+            p_offline: true,
+          })
+        : await rpc<CheckinResp>("op_checkin", {
+            p_client_id: item.client_id,
+            p_operator: item.operator_id,
+            p_device: dev,
+            p_kondisi: item.kondisi,
+            p_keterangan: item.keterangan,
+            p_lat: item.lat,
+            p_lng: item.lng,
+            p_akurasi: item.akurasi,
+            p_ditekan_at: item.ditekan_at,
+            p_offline: true,
+            p_site: item.site_id,
+          });
       if (r.ok && r.data.ok) {
         sent++;
       } else if (!r.ok && r.network) {
@@ -414,6 +436,103 @@ export default function OperatorApp() {
     setKeterangan("");
     setDone(d);
   };
+
+  // ---------- Check-in lewat scan QR area (otomatis Aman) ----------
+  useEffect(() => {
+    if (!qr || qr.site || qr.invalid || !online) return;
+    let cancelled = false;
+    rpc<{ ok: boolean; site_nama?: string }>("op_qr_info", { p_token: qr.token }).then((r) => {
+      if (cancelled || !r.ok) return;
+      setQr((q) => (q && q.token === qr.token ? { ...q, site: r.data.site_nama ?? null, invalid: !r.data.ok } : q));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [qr, online]);
+
+  const doQrCheckin = useCallback(
+    async (token: string, op: OperatorPick) => {
+      if (qrBusy.current) return;
+      qrBusy.current = true;
+      setError(null);
+      setNotice(null);
+      const pressedAt = new Date().toISOString();
+      setPhase("qr");
+      const cached = fixRef.current && Date.now() - fixRef.current.at < 120000 ? fixRef.current.pos : null;
+      let pos: Pos | null = cached && cached.acc <= 150 ? cached : null;
+      if (!pos) pos = (await getPosition(6000)).pos ?? cached;
+      const item: QueueItem = {
+        client_id: uuid(),
+        operator_id: op.id,
+        kondisi: "aman",
+        keterangan: null,
+        lat: pos?.lat ?? null,
+        lng: pos?.lng ?? null,
+        akurasi: pos ? Math.round(pos.acc) : null,
+        ditekan_at: pressedAt,
+        site_id: null,
+        site_nama: qr?.site ?? null,
+        attempts: 0,
+        qr_token: token,
+      };
+      const r = await rpc<CheckinResp>("op_checkin_qr", {
+        p_client_id: item.client_id,
+        p_operator: op.id,
+        p_device: getDeviceId(),
+        p_token: token,
+        p_lat: item.lat,
+        p_lng: item.lng,
+        p_akurasi: item.akurasi,
+        p_ditekan_at: pressedAt,
+        p_offline: false,
+      });
+      setPhase("idle");
+      setQr(null);
+      qrBusy.current = false;
+      if (!r.ok && r.network) {
+        saveQueue([...store.getQueue(), item]);
+        finish({ waktu: pressedAt, kondisi: "aman", site: item.site_nama, akurasi: item.akurasi, luar: false, tanpaLokasi: !pos, antre: true, viaQr: true }, "aman");
+        return;
+      }
+      if (!r.ok) return setError(r.error);
+      const d = r.data;
+      if (!d.ok) {
+        if (d.error === "device_mismatch" || d.error === "inactive") {
+          store.setOperator(null);
+          setOperator(null);
+        }
+        return setError(ERR_TEXT[d.error || ""] || `Gagal: ${d.error}`);
+      }
+      finish(
+        {
+          waktu: d.ditekan_at || pressedAt,
+          kondisi: "aman",
+          site: d.site_nama || item.site_nama,
+          akurasi: item.akurasi,
+          luar: !!d.di_luar_area,
+          tanpaLokasi: !!d.tanpa_lokasi,
+          antre: false,
+          viaQr: true,
+          sudahAda: !!d.duplicate,
+        },
+        "aman",
+      );
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [qr],
+  );
+
+  useEffect(() => {
+    if (!ready || !operator || !qr || qr.invalid || phase !== "idle") return;
+    doQrCheckin(qr.token, operator);
+  }, [ready, operator, qr, phase, doQrCheckin]);
+
+  useEffect(() => {
+    if (qr?.invalid) {
+      setError(ERR_TEXT.invalid_qr);
+      setQr(null);
+    }
+  }, [qr]);
 
   const doCheckin = async (kondisi: Kondisi) => {
     if (phase !== "idle") return;
@@ -567,12 +686,15 @@ export default function OperatorApp() {
           <p className="op-done-line">
             {done.kondisi === "aman" ? "Aman" : done.kondisi === "kendala" ? "Kendala" : "DARURAT"}
             {done.site ? ` · ${done.site}` : ""}
+            {done.viaQr ? " · via QR" : ""}
           </p>
           <ul className="op-done-flags">
             {done.akurasi != null && <li>Akurasi GPS ±{done.akurasi} m</li>}
             {done.tanpaLokasi && <li>Tanpa lokasi GPS. Nyalakan GPS untuk laporan berikutnya.</li>}
-            {done.luar && <li>Posisi di luar radius area</li>}
+            {done.luar && !done.viaQr && <li>Posisi di luar radius area</li>}
             {done.antre && <li>Belum ada sinyal. Laporan dikirim otomatis begitu ada sinyal.</li>}
+            {done.sudahAda && <li>QR ini sudah Anda scan barusan, jadi tidak dicatat dua kali.</li>}
+            {done.viaQr && done.luar && <li>Posisi GPS jauh dari area QR</li>}
           </ul>
           <button className="op-btn-secondary" onClick={() => setDone(null)}>
             Selesai
@@ -597,6 +719,12 @@ export default function OperatorApp() {
           {staffSession ? "Dashboard" : "Login SPV / Admin"}
         </a>
       </header>
+
+      {qr && !operator && (
+        <section className="op-notice">
+          QR area{qr.site ? ` ${qr.site}` : ""} terdeteksi. Pilih nama Anda di bawah, check-in Aman akan tercatat otomatis.
+        </section>
+      )}
 
       <section className="op-card op-who">
         <label className="op-label" htmlFor="nama">
@@ -699,7 +827,7 @@ export default function OperatorApp() {
       {phase !== "idle" && (
         <div className="op-overlay" role="status">
           <div className="op-spinner" aria-hidden="true" />
-          {phase === "locating" ? "Mengambil lokasi GPS…" : "Mengirim laporan…"}
+          {phase === "locating" ? "Mengambil lokasi GPS…" : phase === "qr" ? "Mencatat check-in via QR…" : "Mengirim laporan…"}
         </div>
       )}
 

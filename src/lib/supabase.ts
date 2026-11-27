@@ -25,6 +25,7 @@ export type Site = {
   lng: number;
   radius_m: number;
   aktif: boolean;
+  qr_token?: string;
 };
 
 export type Operator = {
@@ -57,6 +58,7 @@ export type Checkin = {
   diterima_at: string;
   offline: boolean;
   jam_selisih: boolean;
+  via_qr?: boolean;
 };
 
 export type Settings = {
@@ -84,4 +86,4 @@ export const DEFAULT_SETTINGS: Settings = {
 };
 
 export const CHECKIN_COLS =
-  "id,operator_id,site_id,kondisi,keterangan,lat,lng,akurasi_m,jarak_area_m,di_luar_area,area_manual,ditekan_at,diterima_at,offline,jam_selisih";
+  "id,operator_id,site_id,kondisi,keterangan,lat,lng,akurasi_m,jarak_area_m,di_luar_area,area_manual,ditekan_at,diterima_at,offline,jam_selisih,via_qr";

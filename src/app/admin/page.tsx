@@ -252,6 +252,14 @@ function SitesTab({ sites, reload }: { sites: Site[]; reload: () => void }) {
     reload();
   };
 
+  const rotateQr = async (s: Site) => {
+    if (!confirm(`Ganti kode QR untuk ${s.nama}? QR lama yang sudah tertempel langsung tidak berlaku dan perlu dicetak ulang.`)) return;
+    const { error } = await supabase().rpc("admin_rotate_qr", { p_site: s.id });
+    if (error) return setMsg({ ok: false, text: error.message });
+    setMsg({ ok: true, text: `Kode QR ${s.nama} sudah diganti. Cetak ulang QR-nya.` });
+    reload();
+  };
+
   const editSite = (s: Site) => setForm({ id: s.id, nama: s.nama, coord: `${s.lat}, ${s.lng}`, radius: String(s.radius_m), aktif: s.aktif });
 
   return (
@@ -294,6 +302,12 @@ function SitesTab({ sites, reload }: { sites: Site[]; reload: () => void }) {
             )}
           </div>
         </div>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <span className="st-muted">QR area: operator scan dengan kamera HP, check-in Aman tercatat otomatis.</span>
+          <a className="btn btn-sm" href="/cetak-qr?site=all" style={{ textDecoration: "none" }}>
+            Cetak semua QR
+          </a>
+        </div>
         <div className="tbl-wrap">
           <table className="tbl">
             <thead>
@@ -315,10 +329,20 @@ function SitesTab({ sites, reload }: { sites: Site[]; reload: () => void }) {
                   </td>
                   <td>{s.radius_m} m</td>
                   <td>{s.aktif ? <span className="pill pill-ok">Aktif</span> : <span className="pill pill-off">Nonaktif</span>}</td>
-                  <td>
+                  <td style={{ whiteSpace: "nowrap" }}>
                     <button className="btn btn-sm" onClick={() => editSite(s)}>
                       Ubah
-                    </button>
+                    </button>{" "}
+                    {s.aktif && (
+                      <a className="btn btn-sm" href={`/cetak-qr?site=${s.id}`} style={{ textDecoration: "none" }}>
+                        Cetak QR
+                      </a>
+                    )}{" "}
+                    {s.aktif && (
+                      <button className="btn btn-sm" onClick={() => rotateQr(s)} title="QR lama tidak berlaku lagi">
+                        Ganti kode QR
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -524,7 +548,7 @@ function Admin() {
   const [tab, setTab] = useState<"operator" | "area" | "akun" | "pengaturan">("operator");
   const [sites, setSites] = useState<Site[]>([]);
   const loadSites = useCallback(async () => {
-    const { data } = await supabase().from("sites").select("id,nama,lat,lng,radius_m,aktif").order("nama");
+    const { data } = await supabase().from("sites").select("id,nama,lat,lng,radius_m,aktif,qr_token").order("nama");
     setSites((data as Site[]) || []);
   }, []);
   useEffect(() => {

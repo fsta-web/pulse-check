@@ -19,6 +19,7 @@ export type QueueItem = {
   site_nama: string | null;
   attempts: number;
   needs_site?: boolean;
+  qr_token?: string;
 };
 
 const K = {

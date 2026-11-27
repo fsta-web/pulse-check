@@ -8,7 +8,8 @@ type Cell = string | number | null;
 
 export function flagsText(c: Checkin): string {
   const f: string[] = [];
-  if (c.di_luar_area) f.push("di luar area");
+  if (c.via_qr) f.push("via QR");
+  if (c.di_luar_area) f.push(c.via_qr ? "jauh dari area QR" : "di luar area");
   if (c.area_manual) f.push("area dipilih manual");
   if (c.offline) f.push("terkirim terlambat");
   if (c.lat == null) f.push("tanpa lokasi");

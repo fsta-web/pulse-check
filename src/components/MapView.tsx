@@ -32,7 +32,8 @@ function esc(s: string): string {
 
 export function checkinPopup(c: Checkin, nama: string, now = Date.now()): string {
   const flags: string[] = [];
-  if (c.di_luar_area) flags.push("di luar area");
+  if (c.via_qr) flags.push("via QR");
+  if (c.di_luar_area) flags.push(c.via_qr ? "jauh dari area QR" : "di luar area");
   if (c.offline) flags.push("terkirim terlambat");
   if (c.lat == null) flags.push("tanpa lokasi");
   if (c.jam_selisih) flags.push("jam HP berbeda");
